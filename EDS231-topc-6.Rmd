@@ -1,0 +1,437 @@
+---
+title: 'EDS 231: Topic 6'
+author: "Wylie Hampson"
+date: "5/4/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## In class lab:
+### Assignment located below.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(pdftools)
+library(quanteda)
+library(tm)
+library(topicmodels)
+library(ldatuning)
+library(tidyverse)
+library(tidytext)
+library(reshape2)
+```
+
+**Import the data.**
+
+```{r}
+
+##Topic 6 .Rmd here:https://raw.githubusercontent.com/MaRo406/EDS_231-text-sentiment/main/topic_6.Rmd
+#grab data here: 
+comments_df<-read_csv("https://raw.githubusercontent.com/MaRo406/EDS_231-text-sentiment/main/dat/comments_df.csv")
+
+#comments_df <- read_csv(here("dat", "comments_df.csv")) #if reading from local
+```
+
+**Create the corpus**
+
+```{r}
+epa_corp <- corpus(x = comments_df, text_field = "text")
+epa_corp.stats <- summary(epa_corp)
+# head(epa_corp.stats, n = 25)
+```
+
+**Tokenize the corpus.**
+
+```{r}
+toks <- tokens(epa_corp, remove_punct = TRUE, remove_numbers = TRUE)
+#I added some project-specific stop words here
+add_stops <- c(stopwords("en"),"environmental", "justice", "ej", "epa", "public", "comment")
+toks1 <- tokens_select(toks, pattern = add_stops, selection = "remove")
+```
+
+**Create the DFM.**
+
+```{r}
+dfm_comm<- dfm(toks1, tolower = TRUE)
+dfm <- dfm_wordstem(dfm_comm)
+dfm <- dfm_trim(dfm, min_docfreq = 2) #remove terms only appearing in one doc (min_termfreq = 10)
+
+print(head(dfm))
+```
+
+**Remove rows with all zeros.**
+
+```{r}
+#remove rows (docs) with all zeros
+sel_idx <- slam::row_sums(dfm) > 0 
+dfm <- dfm[sel_idx, ]
+#comments_df <- dfm[sel_idx, ]
+```
+
+**Here's where we actually create out first model. This model has 9 different topics.**
+
+```{r}
+k <- 9 
+
+topicModel_k9 <- LDA(dfm, k, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+#nTerms(dfm_comm) 
+
+tmResult <- posterior(topicModel_k9)
+attributes(tmResult)
+```
+
+**The beta value shows the likelihood that a token will show up in a topic.**
+
+```{r}
+#nTerms(dfm_comm)   
+beta <- tmResult$terms   # get beta from results
+dim(beta)                # K distributions over nTerms(DTM) terms# lengthOfVocab
+```
+
+**The top 10 terms for each topic.**
+
+```{r}
+terms(topicModel_k9, 10)
+```
+
+**This function helps calculate different metrics to estimate the most preferable number of topics for an LDA model.**
+
+```{r}
+#
+result <- FindTopicsNumber(
+  dfm,
+  topics = seq(from = 2, to = 20, by = 1),
+  metrics = c("CaoJuan2009",  "Deveaud2014"),
+  method = "Gibbs",
+  control = list(seed = 77),
+  verbose = TRUE
+)
+```
+
+**Here we plot the results from the above function.**
+
+```{r}
+FindTopicsNumber_plot(result)
+```
+
+**Here we try to make a model with 7 topics instead of 9. We can see from the above plot that 7 seems to be a valid number from the Deveaud2014 metric.**
+
+```{r}
+k <- 7
+
+topicModel_k7 <- LDA(dfm, k, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+tmResult <- posterior(topicModel_k7)
+terms(topicModel_k7, 10)
+```
+
+```{r}
+theta <- tmResult$topics
+beta <- tmResult$terms
+vocab <- (colnames(beta))
+```
+
+```{r}
+comment_topics <- tidy(topicModel_k7, matrix = "beta")
+
+top_terms <- comment_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+```
+
+```{r}
+top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+top5termsPerTopic <- terms(topicModel_k7, 5)
+topicNames <- apply(top5termsPerTopic, 2, paste, collapse=" ")
+```
+
+**This plot shows the theta value, which shows topics were most common in which documents.**
+
+```{r}
+exampleIds <- c(1, 2, 3)
+N <- length(exampleIds)
+
+#lapply(epa_corp[exampleIds], as.character) #uncomment to view example text
+# get topic proportions form example documents
+topicProportionExamples <- theta[exampleIds,]
+colnames(topicProportionExamples) <- topicNames
+vizDataFrame <- melt(cbind(data.frame(topicProportionExamples), document=factor(1:N)), variable.name = "topic", id.vars = "document")  
+ggplot(data = vizDataFrame, aes(topic, value, fill = document), ylab = "proportion") +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  
+  coord_flip() +
+  facet_wrap(~ document, ncol = N)
+```
+
+**This creates an interactive plot that helps summarize each topics.**
+
+```{r}
+library(LDAvis)
+library("tsne")
+svd_tsne <- function(x) tsne(svd(x)$u)
+json <- createJSON(
+  phi = tmResult$terms, 
+  theta = tmResult$topics, 
+  doc.length = rowSums(dfm), 
+  vocab = colnames(dfm), 
+  term.frequency = colSums(dfm),
+  mds.method = svd_tsne,
+  plot.opts = list(xlab="", ylab="")
+)
+serVis(json)
+```
+
+## Assignment:
+
+**Run three more models and select the overall best value for k (the number of topics) - include some justification for your selection: theory, FindTopicsNumber() optimization metrics, interpretability, LDAvis**
+
+*For this assignemnt I based my choices for how many topics to analyize from the FindTopicsNumbers plot above. From the Deveaud2014 metrics we can see that 10 and 14 perform best, and from the CaoJuan2009 metric we can see that 20 topics performs best.*
+
+**First model, with 10 topics.**
+
+```{r}
+k <- 10
+
+topicModel_k10 <- LDA(dfm, k, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+tmResult <- posterior(topicModel_k10)
+terms(topicModel_k10, 10)
+```
+
+```{r}
+theta <- tmResult$topics
+beta <- tmResult$terms
+vocab <- (colnames(beta))
+```
+
+```{r}
+comment_topics <- tidy(topicModel_k10, matrix = "beta")
+
+top_terms <- comment_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+```
+
+```{r}
+top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+top5termsPerTopic <- terms(topicModel_k10, 5)
+topicNames <- apply(top5termsPerTopic, 2, paste, collapse=" ")
+```
+
+```{r}
+exampleIds <- c(1, 2, 3)
+N <- length(exampleIds)
+
+#lapply(epa_corp[exampleIds], as.character) #uncomment to view example text
+# get topic proportions form example documents
+topicProportionExamples <- theta[exampleIds,]
+colnames(topicProportionExamples) <- topicNames
+vizDataFrame <- melt(cbind(data.frame(topicProportionExamples), document=factor(1:N)), variable.name = "topic", id.vars = "document")  
+ggplot(data = vizDataFrame, aes(topic, value, fill = document), ylab = "proportion") +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  
+  coord_flip() +
+  facet_wrap(~ document, ncol = N)
+```
+
+```{r}
+svd_tsne <- function(x) tsne(svd(x)$u)
+json <- createJSON(
+  phi = tmResult$terms, 
+  theta = tmResult$topics, 
+  doc.length = rowSums(dfm), 
+  vocab = colnames(dfm), 
+  term.frequency = colSums(dfm),
+  mds.method = svd_tsne,
+  plot.opts = list(xlab="", ylab="")
+)
+serVis(json)
+```
+
+**Second model, with 16 topics. I think 16 is a good number to try because it scores well with both metrics from the FindTopicsNumber plot, and from the lab it we know that it could have 9 topics for the EPA priority areas, and 7 topics for the EPA's additional topics.**
+
+```{r}
+k <- 16
+
+topicModel_k16 <- LDA(dfm, k, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+tmResult <- posterior(topicModel_k16)
+terms(topicModel_k16, 10)
+```
+
+```{r}
+theta <- tmResult$topics
+beta <- tmResult$terms
+vocab <- (colnames(beta))
+```
+
+```{r}
+comment_topics <- tidy(topicModel_k16, matrix = "beta")
+
+top_terms <- comment_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+```
+
+```{r}
+top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+top5termsPerTopic <- terms(topicModel_k16, 5)
+topicNames <- apply(top5termsPerTopic, 2, paste, collapse=" ")
+```
+
+```{r}
+exampleIds <- c(1, 2, 3)
+N <- length(exampleIds)
+
+#lapply(epa_corp[exampleIds], as.character) #uncomment to view example text
+# get topic proportions form example documents
+topicProportionExamples <- theta[exampleIds,]
+colnames(topicProportionExamples) <- topicNames
+vizDataFrame <- melt(cbind(data.frame(topicProportionExamples), document=factor(1:N)), variable.name = "topic", id.vars = "document")  
+ggplot(data = vizDataFrame, aes(topic, value, fill = document), ylab = "proportion") +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  
+  coord_flip() +
+  facet_wrap(~ document, ncol = N)
+```
+
+```{r}
+svd_tsne <- function(x) tsne(svd(x)$u)
+json <- createJSON(
+  phi = tmResult$terms, 
+  theta = tmResult$topics, 
+  doc.length = rowSums(dfm), 
+  vocab = colnames(dfm), 
+  term.frequency = colSums(dfm),
+  mds.method = svd_tsne,
+  plot.opts = list(xlab="", ylab="")
+)
+serVis(json)
+```
+
+**Third model, with 20 topics.**
+
+```{r}
+k <- 20
+
+topicModel_k20 <- LDA(dfm, k, method="Gibbs", control=list(iter = 500, verbose = 25))
+```
+
+```{r}
+tmResult <- posterior(topicModel_k20)
+terms(topicModel_k20, 10)
+```
+
+```{r}
+theta <- tmResult$topics
+beta <- tmResult$terms
+vocab <- (colnames(beta))
+```
+
+```{r}
+comment_topics <- tidy(topicModel_k20, matrix = "beta")
+
+top_terms <- comment_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+```
+
+```{r}
+top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+```{r}
+top5termsPerTopic <- terms(topicModel_k20, 5)
+topicNames <- apply(top5termsPerTopic, 2, paste, collapse=" ")
+```
+
+```{r}
+exampleIds <- c(1, 2, 3)
+N <- length(exampleIds)
+
+#lapply(epa_corp[exampleIds], as.character) #uncomment to view example text
+# get topic proportions form example documents
+topicProportionExamples <- theta[exampleIds,]
+colnames(topicProportionExamples) <- topicNames
+vizDataFrame <- melt(cbind(data.frame(topicProportionExamples), document=factor(1:N)), variable.name = "topic", id.vars = "document")  
+ggplot(data = vizDataFrame, aes(topic, value, fill = document), ylab = "proportion") +
+  geom_bar(stat="identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  
+  coord_flip() +
+  facet_wrap(~ document, ncol = N)
+```
+
+```{r}
+svd_tsne <- function(x) tsne(svd(x)$u)
+json <- createJSON(
+  phi = tmResult$terms, 
+  theta = tmResult$topics, 
+  doc.length = rowSums(dfm), 
+  vocab = colnames(dfm), 
+  term.frequency = colSums(dfm),
+  mds.method = svd_tsne,
+  plot.opts = list(xlab="", ylab="")
+)
+serVis(json)
+```
+
+*I think that 16 topics is probably the best number to use because it makes sense with the EPA's priority and additional topics, and it scored well with both metrics from the FindTopicsNumbers function, where as 10 and 20 topics seemed to only score well with one or the other.*
+
+
